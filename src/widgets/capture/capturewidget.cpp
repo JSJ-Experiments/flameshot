@@ -2139,6 +2139,15 @@ void CaptureWidget::flushOverlayRefresh()
 QWidget* CaptureWidget::overlayEventTargetAt(const QPoint& pos) const
 {
     QWidget* target = childAt(pos);
+    if (target == nullptr) {
+        return const_cast<CaptureWidget*>(this);
+    }
+
+    if (target == m_selection && activeButtonToolType() != CaptureTool::NONE &&
+        activeButtonToolType() != CaptureTool::TYPE_MOVESELECTION) {
+        return const_cast<CaptureWidget*>(this);
+    }
+
     return target ? target : const_cast<CaptureWidget*>(this);
 }
 
