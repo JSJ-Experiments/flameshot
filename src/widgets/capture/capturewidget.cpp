@@ -370,8 +370,21 @@ void CaptureWidget::showCaptureInterface()
 
 void CaptureWidget::renderToOverlay(QPainter* painter, const QRect& viewportRect)
 {
-    Q_UNUSED(painter)
-    Q_UNUSED(viewportRect)
+    if (viewportRect.isEmpty()) {
+        return;
+    }
+
+    if (m_overlayFrameDirty || m_overlayFrameCache.size() != size()) {
+        m_overlayFrameCache = QPixmap(size());
+        m_overlayFrameCache.fill(Qt::transparent);
+        render(&m_overlayFrameCache,
+               QPoint(),
+               QRegion(rect()),
+               QWidget::DrawWindowBackground | QWidget::DrawChildren);
+        m_overlayFrameDirty = false;
+    }
+
+    painter->drawPixmap(0, 0, m_overlayFrameCache.copy(viewportRect));
 }
 
 void CaptureWidget::dispatchOverlayMouseEvent(QMouseEvent* event,
@@ -2064,7 +2077,6 @@ void CaptureWidget::createWaylandOverlayViews()
         overlay->winId();
         overlay->syncGeometry();
         overlay->showFullScreen();
-        overlay->refreshCache();
         m_overlayViews.append(overlay);
     }
 }
@@ -2090,6 +2102,7 @@ void CaptureWidget::refreshOverlayViews(const QRect& dirtyRect)
         return;
     }
 
+    m_overlayFrameDirty = true;
     m_overlayDirtyRegion += dirtyRect.isNull() ? QRegion(rect()) : QRegion(dirtyRect);
     if (!m_overlayRefreshTimer.isActive()) {
         m_overlayRefreshTimer.start(16);
@@ -2107,14 +2120,14 @@ void CaptureWidget::flushOverlayRefresh()
             continue;
         }
         overlay->setCursor(cursor());
-        QRegion localDirty =
-          m_overlayDirtyRegion.intersected(overlay->viewportRect())
+        const QRect localDirty =
+          m_overlayDirtyRegion.boundingRect()
+            .intersected(overlay->viewportRect())
             .translated(-overlay->viewportRect().topLeft());
         if (localDirty.isEmpty()) {
             continue;
         }
-        overlay->refreshCache(localDirty);
-        overlay->update(localDirty.boundingRect());
+        overlay->update(localDirty);
     }
     m_overlayDirtyRegion = QRegion();
 }

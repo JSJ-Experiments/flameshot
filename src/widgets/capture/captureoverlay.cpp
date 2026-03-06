@@ -8,7 +8,6 @@
 #include <QMouseEvent>
 #include <QPaintEvent>
 #include <QPainter>
-#include <QRegion>
 #include <QScreen>
 #include <QWindow>
 #include <QWheelEvent>
@@ -46,52 +45,15 @@ void CaptureOverlay::prepareToClose()
     m_closing = true;
 }
 
-void CaptureOverlay::refreshCache(const QRegion& dirtyRegion)
-{
-    if (!m_controller) {
-        return;
-    }
-
-    if (m_cachedFrame.size() != size()) {
-        m_cachedFrame = QPixmap(size());
-        m_cachedFrame.fill(Qt::transparent);
-    }
-
-    QRegion localDirty = dirtyRegion;
-    if (localDirty.isEmpty()) {
-        localDirty = rect();
-    }
-
-    QPainter cachePainter(&m_cachedFrame);
-    for (const QRect& dirtyRect : localDirty) {
-        cachePainter.save();
-        cachePainter.setClipRect(dirtyRect);
-        cachePainter.fillRect(dirtyRect, Qt::transparent);
-        cachePainter.translate(-m_viewportRect.topLeft());
-        m_controller->render(&cachePainter,
-                             QPoint(),
-                             QRegion(dirtyRect.translated(
-                               m_viewportRect.topLeft())),
-                             QWidget::DrawWindowBackground |
-                               QWidget::DrawChildren);
-        cachePainter.restore();
-    }
-}
-
 void CaptureOverlay::paintEvent(QPaintEvent* event)
 {
     if (!m_controller) {
         return;
     }
 
-    if (m_cachedFrame.size() != size()) {
-        refreshCache(rect());
-    }
-
     QPainter painter(this);
-    for (const QRect& dirtyRect : event->region()) {
-        painter.drawPixmap(dirtyRect, m_cachedFrame, dirtyRect);
-    }
+    Q_UNUSED(event)
+    m_controller->renderToOverlay(&painter, m_viewportRect);
 }
 
 void CaptureOverlay::mousePressEvent(QMouseEvent* event)

@@ -4,9 +4,7 @@
 #pragma once
 
 #include <QPointer>
-#include <QPixmap>
 #include <QRect>
-#include <QRegion>
 #include <QWidget>
 
 class CaptureWidget;
@@ -24,7 +22,6 @@ public:
     void syncGeometry();
     QRect viewportRect() const { return m_viewportRect; }
     void prepareToClose();
-    void refreshCache(const QRegion& dirtyRegion = QRegion());
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -44,5 +41,4 @@ private:
     QPointer<QScreen> m_screen;
     QRect m_viewportRect;
     bool m_closing;
-    QPixmap m_cachedFrame;
 };

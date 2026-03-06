@@ -256,4 +256,6 @@ private:
     QVector<QPointer<CaptureOverlay>> m_overlayViews;
     QRegion m_overlayDirtyRegion;
     QTimer m_overlayRefreshTimer;
+    QPixmap m_overlayFrameCache;
+    bool m_overlayFrameDirty{ true };
 };
