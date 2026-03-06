@@ -369,13 +369,13 @@ void CaptureWidget::renderToOverlay(QPainter* painter, const QRect& viewportRect
         return;
     }
 
-    QPixmap viewportPixmap(viewportRect.size());
-    viewportPixmap.fill(Qt::transparent);
-    render(&viewportPixmap,
-           QPoint(-viewportRect.left(), -viewportRect.top()),
-           QRegion(viewportRect),
+    QPixmap fullFrame(size());
+    fullFrame.fill(Qt::transparent);
+    render(&fullFrame,
+           QPoint(),
+           QRegion(rect()),
            QWidget::DrawWindowBackground | QWidget::DrawChildren);
-    painter->drawPixmap(0, 0, viewportPixmap);
+    painter->drawPixmap(0, 0, fullFrame.copy(viewportRect));
 }
 
 void CaptureWidget::dispatchOverlayMouseEvent(QMouseEvent* event,

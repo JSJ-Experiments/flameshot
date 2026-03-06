@@ -4,8 +4,10 @@
 #include "qguiappcurrentscreen.h"
 #include <QCursor>
 #include <QGuiApplication>
+#include <QLineF>
 #include <QPoint>
 #include <QScreen>
+#include <limits>
 
 QGuiAppCurrentScreen::QGuiAppCurrentScreen()
 {
@@ -49,5 +51,25 @@ QScreen* QGuiAppCurrentScreen::currentScreen(const QPoint& pos)
 QScreen* QGuiAppCurrentScreen::screenAt(const QPoint& pos)
 {
     m_currentScreen = qGuiApp->screenAt(pos);
+    if (m_currentScreen) {
+        return m_currentScreen;
+    }
+
+    qreal nearestDistance = std::numeric_limits<qreal>::max();
+    for (QScreen* screen : qGuiApp->screens()) {
+        const QRect geometry = screen->geometry();
+        if (geometry.contains(pos)) {
+            return screen;
+        }
+
+        const int clampedX = qBound(geometry.left(), pos.x(), geometry.right());
+        const int clampedY = qBound(geometry.top(), pos.y(), geometry.bottom());
+        const qreal distance =
+          QLineF(pos, QPoint(clampedX, clampedY)).length();
+        if (distance < nearestDistance) {
+            nearestDistance = distance;
+            m_currentScreen = screen;
+        }
+    }
     return m_currentScreen;
 }
