@@ -40,23 +40,8 @@ CaptureLauncher::CaptureLauncher(QDialog* parent)
 #else
     ui->captureType->insertItem(
       2, tr("Full Screen"), CaptureRequest::FULLSCREEN_MODE);
-    const QList<QScreen*> screens = QGuiApplication::screens();
-    for (int i = 0; i < screens.size(); ++i) {
-        QScreen* screen = screens[i];
-        QRect geom = screen->geometry();
-        QString monitorText = tr("Monitor %1: %2 (%3x%4)")
-                                .arg(i + 1)
-                                .arg(screen->name())
-                                .arg(geom.width())
-                                .arg(geom.height());
-        ui->monitorSelection->addItem(monitorText, i);
-    }
-    // Select current screen by default
-    QScreen* currentScreen = QGuiAppCurrentScreen().currentScreen();
-    int currentIndex = screens.indexOf(currentScreen);
-    if (currentIndex >= 0) {
-        ui->monitorSelection->setCurrentIndex(currentIndex);
-    }
+    ui->monitorLabel->setVisible(false);
+    ui->monitorSelection->setVisible(false);
 #endif
 
 #ifdef Q_OS_MACOS
@@ -159,12 +144,7 @@ void CaptureLauncher::startCapture()
                                       ui->screenshotHeight->text().toInt()));
     }
 
-#ifndef Q_OS_MACOS
-    int selectedMonitor = ui->monitorSelection->currentData().toInt();
-    req.setSelectedMonitor(selectedMonitor);
-#else
     req.setSelectedMonitor(-1);
-#endif
 
     connectCaptureSlots();
     Flameshot::instance()->requestCapture(req);

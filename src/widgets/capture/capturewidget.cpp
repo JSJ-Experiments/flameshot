@@ -115,21 +115,28 @@ CaptureWidget::CaptureWidget(const CaptureRequest& req,
 #endif
     if (fullScreen) {
         bool ok = true;
-        int preSelectedMonitor;
-        if (req.hasSelectedMonitor()) {
-            preSelectedMonitor = req.selectedMonitor();
+        if (m_useWaylandOverlayViews) {
+            m_context.screenshot = grabber.grabFullDesktop(ok);
+            if (!ok) {
+                this->close();
+            }
+            selectedScreen = QGuiAppCurrentScreen().currentScreen();
         } else {
-            preSelectedMonitor = -1;
-        }
-        m_context.screenshot =
-          grabber.grabEntireDesktop(ok, preSelectedMonitor);
-        if (!ok) {
-            // Error already logged in ScreenGrabber
-            this->close();
+            int preSelectedMonitor;
+            if (req.hasSelectedMonitor()) {
+                preSelectedMonitor = req.selectedMonitor();
+            } else {
+                preSelectedMonitor = -1;
+            }
+            m_context.screenshot =
+              grabber.grabEntireDesktop(ok, preSelectedMonitor);
+            if (!ok) {
+                // Error already logged in ScreenGrabber
+                this->close();
+            }
+            selectedScreen = grabber.getSelectedScreen();
         }
         m_context.origScreenshot = m_context.screenshot;
-
-        selectedScreen = grabber.getSelectedScreen();
 
 #if defined(Q_OS_WIN)
 #if !defined(FLAMESHOT_DEBUG_CAPTURE)
@@ -221,7 +228,7 @@ CaptureWidget::CaptureWidget(const CaptureRequest& req,
     initSelection(); // button handler must be initialized before
     initShortcuts(); // must be called after initSelection
     // init magnify
-    if (m_config.showMagnifier()) {
+    if (m_config.showMagnifier() && !m_useWaylandOverlayViews) {
         m_magnifier = new MagnifierWidget(
           m_context.screenshot, m_uiColor, m_config.squareMagnifier(), this);
     }
@@ -358,10 +365,17 @@ void CaptureWidget::showCaptureInterface()
 
 void CaptureWidget::renderToOverlay(QPainter* painter, const QRect& viewportRect)
 {
-    render(painter,
+    if (viewportRect.isEmpty()) {
+        return;
+    }
+
+    QPixmap viewportPixmap(viewportRect.size());
+    viewportPixmap.fill(Qt::transparent);
+    render(&viewportPixmap,
            QPoint(-viewportRect.left(), -viewportRect.top()),
            QRegion(viewportRect),
            QWidget::DrawWindowBackground | QWidget::DrawChildren);
+    painter->drawPixmap(0, 0, viewportPixmap);
 }
 
 void CaptureWidget::dispatchOverlayMouseEvent(QMouseEvent* event,
