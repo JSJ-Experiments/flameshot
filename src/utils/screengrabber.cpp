@@ -278,6 +278,29 @@ QRect ScreenGrabber::screenGeometry(QScreen* screen)
     return geometry;
 }
 
+QVector<QRect> ScreenGrabber::normalizedScreenGeometries() const
+{
+    QVector<QRect> regions;
+    QRect desktopRect;
+
+    for (QScreen* const screen : QGuiApplication::screens()) {
+        QRect screenRect = screen->geometry();
+#if !defined(Q_OS_WIN)
+        const qreal dpr = screen->devicePixelRatio();
+        screenRect.moveTo(
+          QPointF(screenRect.x() / dpr, screenRect.y() / dpr).toPoint());
+#endif
+        desktopRect = desktopRect.united(screenRect);
+        regions.append(screenRect);
+    }
+
+    for (QRect& region : regions) {
+        region.translate(-desktopRect.topLeft());
+    }
+
+    return regions;
+}
+
 QPixmap ScreenGrabber::grabScreen(QScreen* screen, bool& ok)
 {
     QPixmap p;

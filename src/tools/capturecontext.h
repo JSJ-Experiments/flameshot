@@ -8,6 +8,7 @@
 #include <QPixmap>
 #include <QPoint>
 #include <QRect>
+#include <QVector>
 
 struct CaptureContext
 {
@@ -23,6 +24,12 @@ struct CaptureContext
     QString savePath;
     // Offset of the capture widget based on the system's screen (top-left)
     QPoint widgetOffset;
+    // Logical desktop bounding rect for the current capture session
+    QRect desktopGeometry;
+    // Screen regions normalized to desktopGeometry.topLeft()
+    QVector<QRect> screenRegions;
+    // Logical desktop area currently covered by the active capture surface
+    QRect captureArea;
     // Mouse position inside the widget
     QPoint mousePos;
     // Size of the active tool

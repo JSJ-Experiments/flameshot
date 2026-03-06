@@ -12,6 +12,7 @@
 #include "capturewidget.h"
 #include "abstractlogger.h"
 #include "copytool.h"
+#include "captureoverlay.h"
 #include "src/config/cacheutils.h"
 #include "src/core/flameshot.h"
 #include "src/core/qguiappcurrentscreen.h"
@@ -102,6 +103,8 @@ CaptureWidget::CaptureWidget(const CaptureRequest& req,
     m_contrastUiColor = m_config.contrastUiColor();
     setMouseTracking(true);
     initContext(fullScreen, req);
+    m_useWaylandOverlayViews =
+      fullScreen && DesktopInfo().waylandDetected();
 
     ScreenGrabber grabber;
     QScreen* selectedScreen = nullptr;
@@ -170,38 +173,43 @@ CaptureWidget::CaptureWidget(const CaptureRequest& req,
 #else
 // Call cmake with -DFLAMESHOT_DEBUG_CAPTURE=ON to enable easier debugging
 #if !defined(FLAMESHOT_DEBUG_CAPTURE)
-        setWindowFlags(Qt::BypassWindowManagerHint | Qt::WindowStaysOnTopHint |
-                       Qt::FramelessWindowHint | Qt::Tool);
+        if (!m_useWaylandOverlayViews) {
+            setWindowFlags(Qt::BypassWindowManagerHint |
+                           Qt::WindowStaysOnTopHint |
+                           Qt::FramelessWindowHint | Qt::Tool);
+        }
 #endif
 
-        // Always display on the selected screen (not spanning entire desktop)
-        if (selectedScreen == nullptr) {
-            selectedScreen = QGuiApplication::primaryScreen();
-        }
-        QRect screenGeom = selectedScreen->geometry();
-        move(screenGeom.topLeft());
-        resize(screenGeom.size());
+        if (m_useWaylandOverlayViews) {
+            setAttribute(Qt::WA_DontShowOnScreen);
+            move(m_context.desktopGeometry.topLeft());
+            resize(m_context.desktopGeometry.size());
+        } else {
+            // Always display on the selected screen (not spanning entire
+            // desktop)
+            if (selectedScreen == nullptr) {
+                selectedScreen = QGuiApplication::primaryScreen();
+            }
+            QRect screenGeom = selectedScreen->geometry();
+            move(screenGeom.topLeft());
+            resize(screenGeom.size());
 
-        if (selectedScreen != nullptr && windowHandle()) {
-            windowHandle()->setScreen(selectedScreen);
+            if (selectedScreen != nullptr && windowHandle()) {
+                windowHandle()->setScreen(selectedScreen);
+            }
         }
 #endif
     }
 
+    updateCaptureArea();
+
     QVector<QRect> areas;
     if (m_context.fullscreen) {
-        // Always display on a single screen, normalized to (0, 0)
-        QScreen* screenForAreas = selectedScreen;
-        if (!screenForAreas) {
-            screenForAreas = QGuiAppCurrentScreen().currentScreen();
-        }
-        if (!screenForAreas) {
-            screenForAreas = QGuiApplication::primaryScreen();
-        }
-        QRect r = screenForAreas ? screenForAreas->geometry() : QRect();
-        r.moveTo(0, 0);
-        areas.append(r);
+        areas = screenRegionsForWidget();
     } else {
+        areas.append(rect());
+    }
+    if (areas.isEmpty()) {
         areas.append(rect());
     }
 
@@ -271,9 +279,16 @@ CaptureWidget::CaptureWidget(const CaptureRequest& req,
             });
 
     // OverlayMessage is a child widget, so use widget-local coordinates
-    // In fullscreen mode, use the normalized area; otherwise use widget rect
-    QRect overlayArea =
-      m_context.fullscreen && !areas.isEmpty() ? areas.first() : rect();
+    // In fullscreen mode, use the union of the currently visible screen
+    // regions. This lets later Wayland work swap in multiple per-output windows
+    // without reworking overlay positioning again.
+    QRect overlayArea = rect();
+    if (m_context.fullscreen && !areas.isEmpty()) {
+        overlayArea = areas.first();
+        for (int i = 1; i < areas.size(); ++i) {
+            overlayArea = overlayArea.united(areas.at(i));
+        }
+    }
     OverlayMessage::init(this, overlayArea);
 
     if (m_config.showHelp()) {
@@ -288,6 +303,7 @@ CaptureWidget::CaptureWidget(const CaptureRequest& req,
 
 CaptureWidget::~CaptureWidget()
 {
+    destroyWaylandOverlayViews();
 #if defined(Q_OS_MACOS)
     for (QWidget* widget : qApp->topLevelWidgets()) {
         QString className(widget->metaObject()->className());
@@ -314,6 +330,85 @@ CaptureWidget::~CaptureWidget()
     } else {
         emit Flameshot::instance()->captureFailed();
     }
+}
+
+void CaptureWidget::showCaptureInterface()
+{
+#ifdef Q_OS_WIN
+    show();
+#elif defined(Q_OS_MACOS)
+    showFullScreen();
+    activateWindow();
+    raise();
+#else
+    if (m_useWaylandOverlayViews) {
+        show();
+        createWaylandOverlayViews();
+        refreshOverlayViews();
+        if (!m_overlayViews.isEmpty() && m_overlayViews.first()) {
+            m_overlayViews.first()->activateWindow();
+            m_overlayViews.first()->raise();
+            m_overlayViews.first()->setFocus();
+        }
+    } else {
+        showFullScreen();
+    }
+#endif
+}
+
+void CaptureWidget::renderToOverlay(QPainter* painter, const QRect& viewportRect)
+{
+    render(painter,
+           QPoint(-viewportRect.left(), -viewportRect.top()),
+           QRegion(viewportRect),
+           QWidget::DrawWindowBackground | QWidget::DrawChildren);
+}
+
+void CaptureWidget::dispatchOverlayMouseEvent(QMouseEvent* event,
+                                              const QPoint& controllerPos)
+{
+    QWidget* target = overlayEventTargetAt(controllerPos);
+    QPoint targetPos = target == this ? controllerPos : target->mapFrom(this, controllerPos);
+    QMouseEvent mappedEvent(event->type(),
+                            QPointF(targetPos),
+                            event->globalPosition(),
+                            event->button(),
+                            event->buttons(),
+                            event->modifiers(),
+                            event->pointingDevice());
+    QCoreApplication::sendEvent(target, &mappedEvent);
+    refreshOverlayViews();
+}
+
+void CaptureWidget::dispatchOverlayWheelEvent(QWheelEvent* event,
+                                              const QPoint& controllerPos)
+{
+    QWidget* target = overlayEventTargetAt(controllerPos);
+    QPoint targetPos = target == this ? controllerPos : target->mapFrom(this, controllerPos);
+    QWheelEvent mappedEvent(QPointF(targetPos),
+                            event->globalPosition(),
+                            event->pixelDelta(),
+                            event->angleDelta(),
+                            event->buttons(),
+                            event->modifiers(),
+                            event->phase(),
+                            event->inverted(),
+                            event->source(),
+                            event->pointingDevice());
+    QCoreApplication::sendEvent(target, &mappedEvent);
+    refreshOverlayViews();
+}
+
+void CaptureWidget::dispatchOverlayKeyEvent(QKeyEvent* event)
+{
+    QKeyEvent mappedEvent(event->type(),
+                          event->key(),
+                          event->modifiers(),
+                          event->text(),
+                          event->isAutoRepeat(),
+                          event->count());
+    QCoreApplication::sendEvent(this, &mappedEvent);
+    refreshOverlayViews();
 }
 
 void CaptureWidget::initButtons()
@@ -355,17 +450,6 @@ void CaptureWidget::initButtons()
                 // hard coded slots
                 break;
             default:
-                // Set shortcuts for a tool
-                QString shortcut =
-                  ConfigHandler().shortcut(QVariant::fromValue(t).toString());
-                if (!shortcut.isNull()) {
-                    auto shortcuts = newShortcut(shortcut, this, nullptr);
-                    for (auto* sc : shortcuts) {
-                        connect(sc, &QShortcut::activated, this, [=, this]() {
-                            setState(b);
-                        });
-                    }
-                }
                 break;
         }
 
@@ -393,6 +477,7 @@ void CaptureWidget::initButtons()
         }
     }
     m_buttonHandler->setButtons(vectorButtons);
+    installToolShortcuts(this);
 }
 
 void CaptureWidget::handleButtonRightClick(CaptureToolButton* b)
@@ -408,6 +493,7 @@ void CaptureWidget::handleButtonRightClick(CaptureToolButton* b)
     if (!m_panel->isVisible()) {
         m_panel->show();
     }
+    refreshOverlayViews();
 }
 
 void CaptureWidget::handleButtonLeftClick(CaptureToolButton* b)
@@ -416,6 +502,7 @@ void CaptureWidget::handleButtonLeftClick(CaptureToolButton* b)
         return;
     }
     setState(b);
+    refreshOverlayViews();
 }
 
 void CaptureWidget::xywhTick()
@@ -498,6 +585,7 @@ bool CaptureWidget::commitCurrentTool()
             m_toolWidget->update();
         }
         releaseActiveTool();
+        refreshOverlayViews();
         return true;
     }
     return false;
@@ -571,6 +659,7 @@ void CaptureWidget::deleteToolWidgetOrClose()
             close();
         }
     }
+    refreshOverlayViews();
 }
 
 void CaptureWidget::releaseActiveTool()
@@ -639,6 +728,9 @@ void CaptureWidget::closeEvent(QCloseEvent* event)
     }
 #endif
 
+    if (m_useWaylandOverlayViews) {
+        destroyWaylandOverlayViews();
+    }
     QWidget::closeEvent(event);
 }
 
@@ -795,6 +887,7 @@ void CaptureWidget::showColorPicker(const QPoint& pos)
                         pos.y() - m_colorPicker->height() / 2);
     m_colorPicker->raise();
     m_colorPicker->show();
+    refreshOverlayViews();
 }
 
 bool CaptureWidget::startDrawObjectTool(const QPoint& pos)
@@ -1082,6 +1175,7 @@ void CaptureWidget::setToolSize(int size)
     if (m_context.toolSize != oldSize) {
         emit toolSizeChanged(m_context.toolSize);
     }
+    refreshOverlayViews();
 }
 
 void CaptureWidget::keyPressEvent(QKeyEvent* e)
@@ -1159,17 +1253,24 @@ void CaptureWidget::wheelEvent(QWheelEvent* e)
 void CaptureWidget::resizeEvent(QResizeEvent* e)
 {
     QWidget::resizeEvent(e);
-    m_context.widgetOffset = mapToGlobal(QPoint(0, 0));
+    updateCaptureArea();
     if (!m_context.fullscreen) {
         m_panel->setFixedHeight(height());
         m_buttonHandler->updateScreenRegions(rect());
+    } else {
+        m_buttonHandler->updateScreenRegions(screenRegionsForWidget());
+        refreshOverlayViews();
     }
 }
 
 void CaptureWidget::moveEvent(QMoveEvent* e)
 {
     QWidget::moveEvent(e);
-    m_context.widgetOffset = mapToGlobal(QPoint(0, 0));
+    updateCaptureArea();
+    if (m_context.fullscreen) {
+        m_buttonHandler->updateScreenRegions(screenRegionsForWidget());
+        refreshOverlayViews();
+    }
 }
 
 void CaptureWidget::changeEvent(QEvent* e)
@@ -1184,8 +1285,12 @@ void CaptureWidget::changeEvent(QEvent* e)
 
 void CaptureWidget::initContext(bool fullscreen, const CaptureRequest& req)
 {
+    ScreenGrabber grabber;
     m_context.color = m_config.drawColor();
     m_context.widgetOffset = mapToGlobal(QPoint(0, 0));
+    m_context.desktopGeometry = grabber.desktopGeometry();
+    m_context.screenRegions = grabber.normalizedScreenGeometries();
+    m_context.captureArea = QRect(m_context.widgetOffset, size());
     m_context.mousePos = mapFromGlobal(QCursor::pos());
     m_context.toolSize = m_config.drawThickness();
     m_context.fullscreen = fullscreen;
@@ -1339,6 +1444,7 @@ void CaptureWidget::initSelection()
         updateCursor();
         updateSizeIndicator();
         OverlayMessage::pop();
+        refreshOverlayViews();
     });
     connect(m_selection, &SelectionWidget::geometrySettled, this, [this]() {
         if (m_selection->isVisibleTo(this)) {
@@ -1353,11 +1459,13 @@ void CaptureWidget::initSelection()
         } else {
             m_buttonHandler->hide();
         }
+        refreshOverlayViews();
     });
     connect(m_selection, &SelectionWidget::visibilityChanged, this, [this]() {
         if (!m_selection->isVisible() && !m_helpMessage.isEmpty()) {
             OverlayMessage::push(m_helpMessage);
         }
+        refreshOverlayViews();
     });
     if (!initialSelection.isNull()) {
         const qreal scale = m_context.screenshot.devicePixelRatio();
@@ -1417,6 +1525,7 @@ void CaptureWidget::setState(CaptureToolButton* b)
         updateSelectionState();
         updateTool(b->tool());
     }
+    refreshOverlayViews();
 }
 
 void CaptureWidget::handleToolSignal(CaptureTool::Request r)
@@ -1633,76 +1742,108 @@ void CaptureWidget::removeToolObject(int index)
 
 void CaptureWidget::initShortcuts()
 {
-    newShortcut(
-      QKeySequence(ConfigHandler().shortcut("TYPE_UNDO")), this, SLOT(undo()));
+    installInteractionShortcuts(this);
+}
 
-    newShortcut(
-      QKeySequence(ConfigHandler().shortcut("TYPE_REDO")), this, SLOT(redo()));
+void CaptureWidget::installToolShortcuts(QWidget* parent)
+{
+    for (auto it = m_tools.constBegin(); it != m_tools.constEnd(); ++it) {
+        CaptureTool::Type toolType = it.key();
+        auto* tool = it.value();
 
-    newShortcut(QKeySequence(ConfigHandler().shortcut("TYPE_TOGGLE_PANEL")),
-                this,
-                SLOT(togglePanel()));
-    newShortcut(QKeySequence(ConfigHandler().shortcut("TYPE_GRAB_COLOR")),
-                this,
-                SLOT(startColorGrab()));
+        if (toolType == CaptureTool::TYPE_UNDO ||
+            toolType == CaptureTool::TYPE_REDO) {
+            continue;
+        }
 
-    newShortcut(QKeySequence(ConfigHandler().shortcut("TYPE_RESIZE_LEFT")),
-                m_selection,
-                SLOT(resizeLeft()));
-    newShortcut(QKeySequence(ConfigHandler().shortcut("TYPE_RESIZE_RIGHT")),
-                m_selection,
-                SLOT(resizeRight()));
-    newShortcut(QKeySequence(ConfigHandler().shortcut("TYPE_RESIZE_UP")),
-                m_selection,
-                SLOT(resizeUp()));
-    newShortcut(QKeySequence(ConfigHandler().shortcut("TYPE_RESIZE_DOWN")),
-                m_selection,
-                SLOT(resizeDown()));
-    newShortcut(QKeySequence(ConfigHandler().shortcut("TYPE_SYM_RESIZE_LEFT")),
-                m_selection,
-                SLOT(symResizeLeft()));
-    newShortcut(QKeySequence(ConfigHandler().shortcut("TYPE_SYM_RESIZE_RIGHT")),
-                m_selection,
-                SLOT(symResizeRight()));
-    newShortcut(QKeySequence(ConfigHandler().shortcut("TYPE_SYM_RESIZE_UP")),
-                m_selection,
-                SLOT(symResizeUp()));
-    newShortcut(QKeySequence(ConfigHandler().shortcut("TYPE_SYM_RESIZE_DOWN")),
-                m_selection,
-                SLOT(symResizeDown()));
+        QString shortcut =
+          ConfigHandler().shortcut(QVariant::fromValue(toolType).toString());
+        if (shortcut.isNull()) {
+            continue;
+        }
 
-    newShortcut(QKeySequence(ConfigHandler().shortcut("TYPE_MOVE_LEFT")),
-                m_selection,
-                SLOT(moveLeft()));
-    newShortcut(QKeySequence(ConfigHandler().shortcut("TYPE_MOVE_RIGHT")),
-                m_selection,
-                SLOT(moveRight()));
-    newShortcut(QKeySequence(ConfigHandler().shortcut("TYPE_MOVE_UP")),
-                m_selection,
-                SLOT(moveUp()));
-    newShortcut(QKeySequence(ConfigHandler().shortcut("TYPE_MOVE_DOWN")),
-                m_selection,
-                SLOT(moveDown()));
+        auto shortcuts = newShortcut(shortcut, parent, nullptr);
+        CaptureToolButton* captureButton = nullptr;
+        for (auto* child : findChildren<CaptureToolButton*>()) {
+            if (child->tool() == tool) {
+                captureButton = child;
+                break;
+            }
+        }
+        if (captureButton == nullptr) {
+            continue;
+        }
+        for (auto* sc : shortcuts) {
+            connect(sc, &QShortcut::activated, this, [this, captureButton]() {
+                setState(captureButton);
+            });
+        }
+    }
+}
 
-    newShortcut(QKeySequence(ConfigHandler().shortcut("TYPE_CANCEL")),
-                this,
-                SLOT(cancel()));
+void CaptureWidget::installInteractionShortcuts(QWidget* parent)
+{
+    auto connectShortcutToObject = [this, parent](const QString& name,
+                                                  QObject* receiver,
+                                                  const char* slot) {
+        auto shortcuts = newShortcut(QKeySequence(ConfigHandler().shortcut(name)),
+                                     parent,
+                                     nullptr);
+        for (auto* sc : shortcuts) {
+            connect(sc, SIGNAL(activated()), receiver, slot);
+        }
+    };
 
-    newShortcut(
-      QKeySequence(ConfigHandler().shortcut("TYPE_DELETE_CURRENT_TOOL")),
-      this,
-      SLOT(deleteCurrentTool()));
+    connectShortcutToObject("TYPE_UNDO", this, SLOT(undo()));
+    connectShortcutToObject("TYPE_REDO", this, SLOT(redo()));
+    connectShortcutToObject("TYPE_TOGGLE_PANEL", this, SLOT(togglePanel()));
+    connectShortcutToObject("TYPE_GRAB_COLOR", this, SLOT(startColorGrab()));
+    connectShortcutToObject("TYPE_RESIZE_LEFT", m_selection, SLOT(resizeLeft()));
+    connectShortcutToObject("TYPE_RESIZE_RIGHT",
+                            m_selection,
+                            SLOT(resizeRight()));
+    connectShortcutToObject("TYPE_RESIZE_UP", m_selection, SLOT(resizeUp()));
+    connectShortcutToObject("TYPE_RESIZE_DOWN",
+                            m_selection,
+                            SLOT(resizeDown()));
+    connectShortcutToObject("TYPE_SYM_RESIZE_LEFT",
+                            m_selection,
+                            SLOT(symResizeLeft()));
+    connectShortcutToObject("TYPE_SYM_RESIZE_RIGHT",
+                            m_selection,
+                            SLOT(symResizeRight()));
+    connectShortcutToObject("TYPE_SYM_RESIZE_UP",
+                            m_selection,
+                            SLOT(symResizeUp()));
+    connectShortcutToObject("TYPE_SYM_RESIZE_DOWN",
+                            m_selection,
+                            SLOT(symResizeDown()));
+    connectShortcutToObject("TYPE_MOVE_LEFT", m_selection, SLOT(moveLeft()));
+    connectShortcutToObject("TYPE_MOVE_RIGHT", m_selection, SLOT(moveRight()));
+    connectShortcutToObject("TYPE_MOVE_UP", m_selection, SLOT(moveUp()));
+    connectShortcutToObject("TYPE_MOVE_DOWN", m_selection, SLOT(moveDown()));
 
-    newShortcut(
-      QKeySequence(ConfigHandler().shortcut("TYPE_COMMIT_CURRENT_TOOL")),
-      this,
-      SLOT(commitCurrentTool()));
+    auto connectForwardedShortcut = [this, parent](const QString& name,
+                                                   const char* slot) {
+        auto shortcuts = newShortcut(QKeySequence(ConfigHandler().shortcut(name)),
+                                     parent,
+                                     nullptr);
+        for (auto* sc : shortcuts) {
+            connect(sc, SIGNAL(activated()), this, slot);
+        }
+    };
 
-    newShortcut(QKeySequence(ConfigHandler().shortcut("TYPE_SELECT_ALL")),
-                this,
-                SLOT(selectAll()));
+    connectForwardedShortcut("TYPE_CANCEL", SLOT(cancel()));
+    connectForwardedShortcut("TYPE_DELETE_CURRENT_TOOL",
+                             SLOT(deleteCurrentTool()));
+    connectForwardedShortcut("TYPE_COMMIT_CURRENT_TOOL",
+                             SLOT(commitCurrentTool()));
+    connectForwardedShortcut("TYPE_SELECT_ALL", SLOT(selectAll()));
 
-    newShortcut(Qt::Key_Escape, this, SLOT(deleteToolWidgetOrClose()));
+    auto shortcuts = newShortcut(Qt::Key_Escape, parent, nullptr);
+    for (auto* sc : shortcuts) {
+        connect(sc, SIGNAL(activated()), this, SLOT(deleteToolWidgetOrClose()));
+    }
 }
 
 void CaptureWidget::deleteCurrentTool()
@@ -1741,6 +1882,14 @@ void CaptureWidget::updateCursor()
         setCursor(Qt::OpenHandCursor);
     } else {
         setCursor(Qt::CrossCursor);
+    }
+    if (!m_useWaylandOverlayViews) {
+        return;
+    }
+    for (auto& overlay : m_overlayViews) {
+        if (overlay) {
+            overlay->setCursor(cursor());
+        }
     }
 }
 
@@ -1789,6 +1938,7 @@ void CaptureWidget::updateTool(CaptureTool* tool)
 void CaptureWidget::updateLayersPanel()
 {
     m_panel->fillCaptureTools(m_captureToolObjects.captureToolObjects());
+    refreshOverlayViews();
 }
 
 void CaptureWidget::pushToolToStack()
@@ -1837,6 +1987,7 @@ void CaptureWidget::drawToolsData(bool drawSelection)
     if (drawSelection) {
         drawObjectSelection();
     }
+    refreshOverlayViews();
 }
 
 void CaptureWidget::drawObjectSelection()
@@ -1860,6 +2011,85 @@ void CaptureWidget::processPixmapWithTool(QPixmap* pixmap, CaptureTool* tool)
     QPainter painter(pixmap);
     painter.setRenderHint(QPainter::Antialiasing);
     tool->process(painter, *pixmap);
+}
+
+void CaptureWidget::updateCaptureArea()
+{
+    m_context.widgetOffset = mapToGlobal(QPoint(0, 0));
+    m_context.captureArea = QRect(m_context.widgetOffset, size());
+}
+
+QVector<QRect> CaptureWidget::screenRegionsForWidget() const
+{
+    QVector<QRect> regions;
+    QRect normalizedCaptureArea(
+      m_context.captureArea.topLeft() - m_context.desktopGeometry.topLeft(),
+      m_context.captureArea.size());
+
+    for (const QRect& screenRegion : m_context.screenRegions) {
+        QRect visibleRegion = screenRegion.intersected(normalizedCaptureArea);
+        if (visibleRegion.isEmpty()) {
+            continue;
+        }
+        visibleRegion.translate(-normalizedCaptureArea.topLeft());
+        regions.append(visibleRegion);
+    }
+
+    return regions;
+}
+
+void CaptureWidget::createWaylandOverlayViews()
+{
+    if (!m_useWaylandOverlayViews || !m_overlayViews.isEmpty()) {
+        return;
+    }
+
+    const QList<QScreen*> screens = QGuiApplication::screens();
+    const int screenCount = qMin(screens.size(), m_context.screenRegions.size());
+    for (int i = 0; i < screenCount; ++i) {
+        auto* overlay =
+          new CaptureOverlay(this, screens.at(i), m_context.screenRegions.at(i));
+        installToolShortcuts(overlay);
+        installInteractionShortcuts(overlay);
+        overlay->winId();
+        overlay->syncGeometry();
+        overlay->showFullScreen();
+        m_overlayViews.append(overlay);
+    }
+}
+
+void CaptureWidget::destroyWaylandOverlayViews()
+{
+    for (auto& overlay : m_overlayViews) {
+        if (!overlay) {
+            continue;
+        }
+        overlay->prepareToClose();
+        overlay->close();
+        overlay->deleteLater();
+    }
+    m_overlayViews.clear();
+}
+
+void CaptureWidget::refreshOverlayViews()
+{
+    if (!m_useWaylandOverlayViews) {
+        return;
+    }
+
+    for (auto& overlay : m_overlayViews) {
+        if (!overlay) {
+            continue;
+        }
+        overlay->setCursor(cursor());
+        overlay->update();
+    }
+}
+
+QWidget* CaptureWidget::overlayEventTargetAt(const QPoint& pos) const
+{
+    QWidget* target = childAt(pos);
+    return target ? target : const_cast<CaptureWidget*>(this);
 }
 
 CaptureTool* CaptureWidget::activeButtonTool() const
@@ -1940,18 +2170,21 @@ QList<QShortcut*> CaptureWidget::newShortcut(const QKeySequence& key,
 void CaptureWidget::togglePanel()
 {
     m_panel->toggle();
+    refreshOverlayViews();
 }
 
 void CaptureWidget::childEnter()
 {
     m_previewEnabled = false;
     updateTool(activeButtonTool());
+    refreshOverlayViews();
 }
 
 void CaptureWidget::childLeave()
 {
     m_previewEnabled = true;
     updateTool(activeButtonTool());
+    refreshOverlayViews();
 }
 
 void CaptureWidget::setCaptureToolObjects(
@@ -2011,6 +2244,7 @@ void CaptureWidget::cancel()
     }
     m_selection->hide();
     emit m_selection->geometrySettled();
+    refreshOverlayViews();
 }
 
 QRect CaptureWidget::extendedSelection() const

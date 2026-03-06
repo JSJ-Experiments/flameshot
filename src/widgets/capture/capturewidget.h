@@ -41,6 +41,9 @@ class UpdateNotificationWidget;
 #endif
 class UtilityPanel;
 class SidePanelWidget;
+class CaptureOverlay;
+class QPainter;
+class QScreen;
 
 class CaptureWidget : public QWidget
 {
@@ -53,7 +56,14 @@ public:
     ~CaptureWidget();
 
     QPixmap pixmap();
+    void showCaptureInterface();
     void setCaptureToolObjects(const CaptureToolObjects& captureToolObjects);
+    void renderToOverlay(QPainter* painter, const QRect& viewportRect);
+    void dispatchOverlayMouseEvent(QMouseEvent* event,
+                                   const QPoint& controllerPos);
+    void dispatchOverlayWheelEvent(QWheelEvent* event,
+                                   const QPoint& controllerPos);
+    void dispatchOverlayKeyEvent(QKeyEvent* event);
 #if !defined(DISABLE_UPDATE_CHECKER)
     void showAppUpdateNotification(const QString& appLatestVersion,
                                    const QString& appLatestUrl);
@@ -152,6 +162,14 @@ private:
     void drawObjectSelection();
 
     void processPixmapWithTool(QPixmap* pixmap, CaptureTool* tool);
+    void updateCaptureArea();
+    QVector<QRect> screenRegionsForWidget() const;
+    void installToolShortcuts(QWidget* parent);
+    void installInteractionShortcuts(QWidget* parent);
+    void createWaylandOverlayViews();
+    void destroyWaylandOverlayViews();
+    void refreshOverlayViews();
+    QWidget* overlayEventTargetAt(const QPoint& pos) const;
 
     CaptureTool* activeButtonTool() const;
     CaptureTool::Type activeButtonToolType() const;
@@ -232,4 +250,6 @@ private:
     int m_gridSize{ 10 };
 
     bool m_clipboardWorkaroundDone{ false };
+    bool m_useWaylandOverlayViews{ false };
+    QVector<QPointer<CaptureOverlay>> m_overlayViews;
 };

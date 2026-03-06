@@ -9,6 +9,7 @@
 #include <QObject>
 #include <QPixmap>
 #include <QScreen>
+#include <QVector>
 
 class QEventLoop;
 class QWidget;
@@ -21,6 +22,7 @@ public:
     QPixmap grabEntireDesktop(bool& ok, int preSelectedMonitor = -1);
     QPixmap grabFullDesktop(bool& ok);
     QRect screenGeometry(QScreen* screen);
+    QVector<QRect> normalizedScreenGeometries() const;
     QPixmap grabScreen(QScreen* screenNumber, bool& ok);
     void freeDesktopPortal(bool& ok, QPixmap& res);
     QRect desktopGeometry();
