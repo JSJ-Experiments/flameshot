@@ -94,8 +94,13 @@ CaptureWidget::CaptureWidget(const CaptureRequest& req,
             this,
             &CaptureWidget::childLeave);
     connect(&m_xywhTimer, &QTimer::timeout, this, &CaptureWidget::xywhTick);
+    connect(&m_overlayRefreshTimer,
+            &QTimer::timeout,
+            this,
+            &CaptureWidget::flushOverlayRefresh);
     // else xywhTick keeps triggering when not needed
     m_xywhTimer.setSingleShot(true);
+    m_overlayRefreshTimer.setSingleShot(true);
     setAttribute(Qt::WA_DeleteOnClose);
     setAttribute(Qt::WA_QuitOnClose, false);
     m_opacity = m_config.contrastOpacity();
@@ -365,21 +370,8 @@ void CaptureWidget::showCaptureInterface()
 
 void CaptureWidget::renderToOverlay(QPainter* painter, const QRect& viewportRect)
 {
-    if (viewportRect.isEmpty()) {
-        return;
-    }
-
-    if (m_overlayFrameDirty || m_overlayFrameCache.size() != size()) {
-        m_overlayFrameCache = QPixmap(size());
-        m_overlayFrameCache.fill(Qt::transparent);
-        render(&m_overlayFrameCache,
-               QPoint(),
-               QRegion(rect()),
-               QWidget::DrawWindowBackground | QWidget::DrawChildren);
-        m_overlayFrameDirty = false;
-    }
-
-    painter->drawPixmap(0, 0, m_overlayFrameCache.copy(viewportRect));
+    Q_UNUSED(painter)
+    Q_UNUSED(viewportRect)
 }
 
 void CaptureWidget::dispatchOverlayMouseEvent(QMouseEvent* event,
@@ -2072,12 +2064,15 @@ void CaptureWidget::createWaylandOverlayViews()
         overlay->winId();
         overlay->syncGeometry();
         overlay->showFullScreen();
+        overlay->refreshCache();
         m_overlayViews.append(overlay);
     }
 }
 
 void CaptureWidget::destroyWaylandOverlayViews()
 {
+    m_overlayRefreshTimer.stop();
+    m_overlayDirtyRegion = QRegion();
     for (auto& overlay : m_overlayViews) {
         if (!overlay) {
             continue;
@@ -2089,25 +2084,39 @@ void CaptureWidget::destroyWaylandOverlayViews()
     m_overlayViews.clear();
 }
 
-void CaptureWidget::refreshOverlayViews()
+void CaptureWidget::refreshOverlayViews(const QRect& dirtyRect)
 {
     if (!m_useWaylandOverlayViews) {
         return;
     }
 
-    invalidateOverlayFrame();
+    m_overlayDirtyRegion += dirtyRect.isNull() ? QRegion(rect()) : QRegion(dirtyRect);
+    if (!m_overlayRefreshTimer.isActive()) {
+        m_overlayRefreshTimer.start(16);
+    }
+}
+
+void CaptureWidget::flushOverlayRefresh()
+{
+    if (!m_useWaylandOverlayViews || m_overlayDirtyRegion.isEmpty()) {
+        return;
+    }
+
     for (auto& overlay : m_overlayViews) {
         if (!overlay) {
             continue;
         }
         overlay->setCursor(cursor());
-        overlay->update();
+        QRegion localDirty =
+          m_overlayDirtyRegion.intersected(overlay->viewportRect())
+            .translated(-overlay->viewportRect().topLeft());
+        if (localDirty.isEmpty()) {
+            continue;
+        }
+        overlay->refreshCache(localDirty);
+        overlay->update(localDirty.boundingRect());
     }
-}
-
-void CaptureWidget::invalidateOverlayFrame()
-{
-    m_overlayFrameDirty = true;
+    m_overlayDirtyRegion = QRegion();
 }
 
 QWidget* CaptureWidget::overlayEventTargetAt(const QPoint& pos) const

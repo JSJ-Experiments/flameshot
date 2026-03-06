@@ -22,6 +22,7 @@
 #include "src/widgets/capture/selectionwidget.h"
 #include <QMessageBox>
 #include <QPointer>
+#include <QRegion>
 #include <QTimer>
 #include <QUndoStack>
 #include <QWidget>
@@ -168,8 +169,8 @@ private:
     void installInteractionShortcuts(QWidget* parent);
     void createWaylandOverlayViews();
     void destroyWaylandOverlayViews();
-    void refreshOverlayViews();
-    void invalidateOverlayFrame();
+    void refreshOverlayViews(const QRect& dirtyRect = QRect());
+    void flushOverlayRefresh();
     QWidget* overlayEventTargetAt(const QPoint& pos) const;
 
     CaptureTool* activeButtonTool() const;
@@ -253,6 +254,6 @@ private:
     bool m_clipboardWorkaroundDone{ false };
     bool m_useWaylandOverlayViews{ false };
     QVector<QPointer<CaptureOverlay>> m_overlayViews;
-    QPixmap m_overlayFrameCache;
-    bool m_overlayFrameDirty{ true };
+    QRegion m_overlayDirtyRegion;
+    QTimer m_overlayRefreshTimer;
 };
