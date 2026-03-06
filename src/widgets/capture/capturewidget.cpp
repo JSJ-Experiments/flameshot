@@ -424,13 +424,15 @@ void CaptureWidget::dispatchOverlayWheelEvent(QWheelEvent* event,
 
 void CaptureWidget::dispatchOverlayKeyEvent(QKeyEvent* event)
 {
+    QWidget* target = (m_toolWidget && m_toolWidget->isVisible()) ? m_toolWidget.data()
+                                                                  : this;
     QKeyEvent mappedEvent(event->type(),
                           event->key(),
                           event->modifiers(),
                           event->text(),
                           event->isAutoRepeat(),
                           event->count());
-    QCoreApplication::sendEvent(this, &mappedEvent);
+    QCoreApplication::sendEvent(target, &mappedEvent);
     refreshOverlayViews();
 }
 
@@ -1281,6 +1283,7 @@ void CaptureWidget::resizeEvent(QResizeEvent* e)
         m_panel->setFixedHeight(height());
         m_buttonHandler->updateScreenRegions(rect());
     } else {
+        updatePanelGeometry();
         m_buttonHandler->updateScreenRegions(screenRegionsForWidget());
         refreshOverlayViews();
     }
@@ -1291,6 +1294,7 @@ void CaptureWidget::moveEvent(QMoveEvent* e)
     QWidget::moveEvent(e);
     updateCaptureArea();
     if (m_context.fullscreen) {
+        updatePanelGeometry();
         m_buttonHandler->updateScreenRegions(screenRegionsForWidget());
         refreshOverlayViews();
     }
@@ -1327,7 +1331,7 @@ void CaptureWidget::initPanel()
     // Use widget-local coordinates (rect()) for all child widgets
     // Child widgets use parent-relative coordinate system, not global screen
     // coords
-    QRect panelRect = rect();
+    QRect panelRect = currentUiViewportRect();
 
     if (ConfigHandler().showSidePanelButton()) {
         auto* panelToggleButton =
@@ -1363,9 +1367,7 @@ void CaptureWidget::initPanel()
     m_panel->setFixedWidth(static_cast<int>(m_colorPicker->width() * 1.5));
     m_panel->setFixedHeight(height());
 #else
-    // Panel uses widget-local coordinates (parent-relative)
-    panelRect.setWidth(m_colorPicker->width() * 1.5);
-    m_panel->setGeometry(panelRect);
+    updatePanelGeometry();
 #endif
     connect(m_panel,
             &UtilityPanel::layerChanged,
@@ -1590,7 +1592,9 @@ void CaptureWidget::handleToolSignal(CaptureTool::Request r)
             m_toolWidget = m_activeTool->widget();
             if (m_toolWidget) {
                 makeChild(m_toolWidget);
-                m_toolWidget->move(m_context.mousePos);
+                m_toolWidget->adjustSize();
+                m_toolWidget->move(
+                  clampToUiViewport(m_context.mousePos, m_toolWidget->size()));
                 m_toolWidget->show();
                 m_toolWidget->setFocus();
             }
@@ -2138,6 +2142,42 @@ QWidget* CaptureWidget::overlayEventTargetAt(const QPoint& pos) const
     return target ? target : const_cast<CaptureWidget*>(this);
 }
 
+QRect CaptureWidget::currentUiViewportRect() const
+{
+    if (!m_useWaylandOverlayViews) {
+        return rect();
+    }
+
+    QScreen* screen = QGuiAppCurrentScreen().currentScreen();
+    if (!screen) {
+        return rect();
+    }
+
+    QRect viewport = screen->geometry();
+    viewport.translate(-m_context.desktopGeometry.topLeft());
+    return viewport;
+}
+
+QPoint CaptureWidget::clampToUiViewport(const QPoint& pos, const QSize& size) const
+{
+    QRect viewport = currentUiViewportRect();
+    const int maxX = qMax(viewport.left(), viewport.right() - size.width());
+    const int maxY = qMax(viewport.top(), viewport.bottom() - size.height());
+    return QPoint(qBound(viewport.left(), pos.x(), maxX),
+                  qBound(viewport.top(), pos.y(), maxY));
+}
+
+void CaptureWidget::updatePanelGeometry()
+{
+    if (m_panel == nullptr) {
+        return;
+    }
+
+    QRect panelRect = currentUiViewportRect();
+    panelRect.setWidth(m_colorPicker->width() * 1.5);
+    m_panel->setGeometry(panelRect);
+}
+
 CaptureTool* CaptureWidget::activeButtonTool() const
 {
     if (m_activeButton == nullptr) {
@@ -2215,6 +2255,7 @@ QList<QShortcut*> CaptureWidget::newShortcut(const QKeySequence& key,
 
 void CaptureWidget::togglePanel()
 {
+    updatePanelGeometry();
     m_panel->toggle();
     refreshOverlayViews();
 }

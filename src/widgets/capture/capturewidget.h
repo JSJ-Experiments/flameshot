@@ -172,6 +172,9 @@ private:
     void refreshOverlayViews(const QRect& dirtyRect = QRect());
     void flushOverlayRefresh();
     QWidget* overlayEventTargetAt(const QPoint& pos) const;
+    QRect currentUiViewportRect() const;
+    QPoint clampToUiViewport(const QPoint& pos, const QSize& size) const;
+    void updatePanelGeometry();
 
     CaptureTool* activeButtonTool() const;
     CaptureTool::Type activeButtonToolType() const;
