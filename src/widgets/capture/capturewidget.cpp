@@ -369,13 +369,17 @@ void CaptureWidget::renderToOverlay(QPainter* painter, const QRect& viewportRect
         return;
     }
 
-    QPixmap fullFrame(size());
-    fullFrame.fill(Qt::transparent);
-    render(&fullFrame,
-           QPoint(),
-           QRegion(rect()),
-           QWidget::DrawWindowBackground | QWidget::DrawChildren);
-    painter->drawPixmap(0, 0, fullFrame.copy(viewportRect));
+    if (m_overlayFrameDirty || m_overlayFrameCache.size() != size()) {
+        m_overlayFrameCache = QPixmap(size());
+        m_overlayFrameCache.fill(Qt::transparent);
+        render(&m_overlayFrameCache,
+               QPoint(),
+               QRegion(rect()),
+               QWidget::DrawWindowBackground | QWidget::DrawChildren);
+        m_overlayFrameDirty = false;
+    }
+
+    painter->drawPixmap(0, 0, m_overlayFrameCache.copy(viewportRect));
 }
 
 void CaptureWidget::dispatchOverlayMouseEvent(QMouseEvent* event,
@@ -2091,6 +2095,7 @@ void CaptureWidget::refreshOverlayViews()
         return;
     }
 
+    invalidateOverlayFrame();
     for (auto& overlay : m_overlayViews) {
         if (!overlay) {
             continue;
@@ -2098,6 +2103,11 @@ void CaptureWidget::refreshOverlayViews()
         overlay->setCursor(cursor());
         overlay->update();
     }
+}
+
+void CaptureWidget::invalidateOverlayFrame()
+{
+    m_overlayFrameDirty = true;
 }
 
 QWidget* CaptureWidget::overlayEventTargetAt(const QPoint& pos) const

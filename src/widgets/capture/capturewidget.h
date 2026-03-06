@@ -169,6 +169,7 @@ private:
     void createWaylandOverlayViews();
     void destroyWaylandOverlayViews();
     void refreshOverlayViews();
+    void invalidateOverlayFrame();
     QWidget* overlayEventTargetAt(const QPoint& pos) const;
 
     CaptureTool* activeButtonTool() const;
@@ -252,4 +253,6 @@ private:
     bool m_clipboardWorkaroundDone{ false };
     bool m_useWaylandOverlayViews{ false };
     QVector<QPointer<CaptureOverlay>> m_overlayViews;
+    QPixmap m_overlayFrameCache;
+    bool m_overlayFrameDirty{ true };
 };
